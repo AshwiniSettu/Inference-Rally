@@ -12,7 +12,7 @@ See **[docs/PLAN.md](docs/PLAN.md)** for the plan and architecture, and
 
 ## Demo video
 
-[![Inference Rally demo video](https://img.youtube.com/vi/c1g9Ugve1Pw/maxresdefault.jpg)](https://youtu.be/c1g9Ugve1Pw)
+[![Inference Rally demo video](https://img.youtube.com/vi/c1g9Ugve1Pw/hqdefault.jpg)](https://youtu.be/c1g9Ugve1Pw)
 
 ▶️ **[Watch the demo on YouTube](https://youtu.be/c1g9Ugve1Pw)**
 
