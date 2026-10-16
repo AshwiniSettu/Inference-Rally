@@ -3,3 +3,8 @@ __pycache__/
 .venv/
 models/*.pte
 .DS_Store
+models/*.gguf
+node_modules/
+frontend/dist/
+logs/
+*.egg-info/

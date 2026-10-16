@@ -1,0 +1,86 @@
+# Inference Rally configuration.
+# Switch machines by changing `active_profile` — no code changes needed.
+
+race:
+  maze_width: 7          # junction columns
+  maze_height: 7         # junction rows
+  loop_ratio: 0.06       # 0 = single route, higher = more alternative routes
+  branchiness: 0.6       # 0 = long corridors, 1 = many short side branches
+  seed: 16               # same seed => same maze for every rerun (16 = close race, all make mistakes)
+  segment_time_s: 1.4    # seconds to drive one road
+  uturn_penalty_s: 0.6   # extra time for turning around
+  max_decisions: 80      # DNF after this many junctions
+  countdown_s: 3
+
+active_profile: demo
+
+profiles:
+  # DEMO mode: simulated NPU vs GPU vs CPU with realistic speeds (no models needed).
+  demo:
+    - id: npu
+      name: Llama-3.2-1B
+      device: NPU
+      runtime: simulated
+      color: "#1D9E75"
+      sim: {tps: 28.0, ttft_ms: 120, accuracy: 0.6}
+    - id: gpu
+      name: Llama-3.2-1B
+      device: GPU
+      runtime: simulated
+      color: "#7F77DD"
+      sim: {tps: 17.5, ttft_ms: 230, accuracy: 0.6}
+    - id: cpu
+      name: Llama-3.2-1B
+      device: CPU
+      runtime: simulated
+      color: "#D85A30"
+      sim: {tps: 6.5, ttft_ms: 620, accuracy: 0.6}
+
+  # PLAY mode: you (DC) vs a real model on the Mac GPU vs a simulated racer.
+  # Start the model first: ./scripts/start_models_mac.sh
+  play:
+    - id: dc
+      name: DC
+      label: DC
+      device: HUMAN
+      runtime: human
+      color: "#F2C14E"
+    - id: llama_gpu
+      name: Llama-3.2-1B
+      label: 1B GPU
+      device: GPU
+      runtime: openai
+      color: "#7F77DD"
+      base_url: http://127.0.0.1:8102/v1
+      model: llama-3.2-1b-instruct
+    - id: sim
+      name: Simulated
+      label: SIM NPU
+      device: NPU
+      runtime: simulated
+      color: "#1D9E75"
+      sim: {tps: 28.0, ttft_ms: 120, accuracy: 0.6}
+
+  # Snapdragon laptop (OpenAI-compatible local servers: ExecuTorch / llama.cpp / GenieX).
+  snapdragon:
+    - id: npu
+      name: Llama-3.2-1B
+      device: NPU
+      runtime: openai
+      color: "#1D9E75"
+      base_url: http://127.0.0.1:8101/v1
+      model: llama3_2_1b_qnn
+    - id: gpu
+      name: Llama-3.2-1B
+      device: GPU
+      runtime: openai
+      color: "#7F77DD"
+      base_url: http://127.0.0.1:8102/v1
+      model: llama-3.2-1b-q4_0
+    - id: cpu
+      name: Llama-3.2-1B
+      device: CPU
+      runtime: openai
+      color: "#D85A30"
+      base_url: http://127.0.0.1:8103/v1
+      model: llama3_2_1b_xnnpack
