@@ -10,6 +10,12 @@ so faster on-device inference visibly wins.
 See **[docs/PLAN.md](docs/PLAN.md)** for the plan and architecture, and
 **[docs/CODING_STANDARDS.md](docs/CODING_STANDARDS.md)** for coding rules.
 
+## Demo video
+
+[![Inference Rally demo video](https://img.youtube.com/vi/c1g9Ugve1Pw/maxresdefault.jpg)](https://youtu.be/c1g9Ugve1Pw)
+
+▶️ **[Watch the demo on YouTube](https://youtu.be/c1g9Ugve1Pw)**
+
 ## Screenshots
 
 ![DEMO mode: simulated NPU vs GPU vs CPU racing through the maze, with the live map and standings](docs/images/demo-race.png)
