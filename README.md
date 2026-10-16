@@ -10,6 +10,14 @@ so faster on-device inference visibly wins.
 See **[docs/PLAN.md](docs/PLAN.md)** for the plan and architecture, and
 **[docs/CODING_STANDARDS.md](docs/CODING_STANDARDS.md)** for coding rules.
 
+## Screenshots
+
+![DEMO mode: simulated NPU vs GPU vs CPU racing through the maze, with the live map and standings](docs/images/demo-race.png)
+
+| PLAY mode: you vs Llama-3.2-1B on the GPU | Race results |
+|---|---|
+| ![PLAY mode race](docs/images/play-race.png) | ![Results screen](docs/images/results.png) |
+
 ## Two modes
 
 | Mode | Racers | Needs |
