@@ -1,49 +1,38 @@
 /**
- * Everything outside the maze: sky gradient, distant hills, clouds, grass field, lights.
- * Gives the arcade "open road" feeling above the hedge walls.
+ * Everything outside the maze: sky gradient, fog, lights, clouds and the San Francisco
+ * bay area (ground, water, hills, landmarks).
  */
 
 import * as THREE from 'three';
-import { COLORS, RENDER, WORLD } from '../config.js';
-import { cloudTexture, grassTexture } from './textures.js';
+import { COLORS, MAP_VIEW, RENDER } from '../config.js';
+import { buildBayArea } from './bay-area.js';
+import { cloudTexture } from './textures.js';
 
-const HILL_COUNT = 34;
-const CLOUD_COUNT = 22;
+const CLOUD_COUNT = 16;
 
 /**
- * Add sky, fog, lights, ground, hills and clouds to ``scene``.
+ * Add sky, fog, lights, the bay area and clouds to ``scene``.
  * @param {THREE.Scene} scene
  * @param {THREE.Vector3} center World center of the maze (scenery is placed around it).
+ * @param {import('./geo.js').GeoFrame} geo Places real latitude/longitude in the world.
+ * @param {object|null} city Street map, or null for a random grid.
+ * @param {boolean} [mapView] The real map: no modelled bay area, fog farther out.
  * @returns {{sun: THREE.DirectionalLight, update: (time: number) => void}}
  */
-export function buildScenery(scene, center) {
-  scene.fog = new THREE.Fog(COLORS.skyHorizon, RENDER.fogNear, RENDER.fogFar);
-  scene.add(buildSkyDome(center));
+export function buildScenery(scene, center, geo, city, mapView = false) {
+  const [fogNear, fogFar] = mapView ? [MAP_VIEW.fogNear, MAP_VIEW.fogFar] : [RENDER.fogNear, RENDER.fogFar];
+  scene.fog = new THREE.Fog(COLORS.skyHorizon, fogNear, fogFar);
+  scene.add(buildSkyDome(center, !mapView));
 
-  const hemi = new THREE.HemisphereLight(0xdfeaff, 0x4a6b3a, 1.15);
+  const hemi = new THREE.HemisphereLight(0xdfeaff, 0x6e6a60, 1.15);
   scene.add(hemi);
   const sun = buildSun(center);
   scene.add(sun, sun.target);
 
-  // The ground sits well below the road tiles, is subdivided (huge triangles lose depth
-  // precision when clipped) and is pushed back with a polygon offset, so roads never
-  // flicker through to grass on any GPU.
-  const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(WORLD.groundSize, WORLD.groundSize, 48, 48),
-    new THREE.MeshLambertMaterial({
-      map: grassTexture(WORLD.groundSize / 8),
-      polygonOffset: true,
-      polygonOffsetFactor: 2,
-      polygonOffsetUnits: 4,
-    }),
-  );
-  ground.rotation.x = -Math.PI / 2;
-  ground.position.set(center.x, -0.25, center.z);
-  ground.receiveShadow = true;
-  scene.add(ground);
-
-  scene.add(buildHills(center));
-  const clouds = buildClouds(center);
+  const bay = mapView ? null : buildBayArea(center, geo, city);
+  if (bay) scene.add(bay.group);
+  // Pixel clouds and a banded sky belong to the arcade look, not to the real map.
+  const clouds = mapView ? new THREE.Group() : buildClouds(center);
   scene.add(clouds);
 
   return {
@@ -53,11 +42,12 @@ export function buildScenery(scene, center) {
       clouds.children.forEach((cloud, i) => {
         cloud.position.x = cloud.userData.baseX + Math.sin(time * 0.02 + i) * 20;
       });
+      bay?.update(time);
     },
   };
 }
 
-function buildSkyDome(center) {
+function buildSkyDome(center, banded) {
   const material = new THREE.ShaderMaterial({
     side: THREE.BackSide,
     depthWrite: false,
@@ -65,6 +55,7 @@ function buildSkyDome(center) {
     uniforms: {
       top: { value: new THREE.Color(COLORS.skyTop) },
       horizon: { value: new THREE.Color(COLORS.skyHorizon) },
+      bands: { value: banded ? 7 : 0 },
     },
     vertexShader: /* glsl */ `
       varying float vHeight;
@@ -75,11 +66,12 @@ function buildSkyDome(center) {
     fragmentShader: /* glsl */ `
       uniform vec3 top;
       uniform vec3 horizon;
+      uniform float bands;
       varying float vHeight;
       void main() {
-        // Banded gradient (posterized) for the retro look instead of a smooth fade.
+        // Banded gradient (posterized) for the retro look; bands = 0 fades smoothly.
         float t = clamp(vHeight * 2.2, 0.0, 1.0);
-        t = floor(t * 7.0) / 7.0;
+        if (bands > 0.0) t = floor(t * bands) / bands;
         gl_FragColor = vec4(mix(horizon, top, t), 1.0);
       }`,
   });
@@ -101,28 +93,6 @@ function buildSun(center) {
   sun.shadow.camera.far = 500;
   sun.shadow.bias = -0.0008;
   return sun;
-}
-
-function buildHills(center) {
-  const group = new THREE.Group();
-  for (let i = 0; i < HILL_COUNT; i += 1) {
-    const angle = (i / HILL_COUNT) * Math.PI * 2 + Math.sin(i * 7.3) * 0.08;
-    const distance = 360 + (i % 3) * 70;
-    const radius = 70 + ((i * 37) % 60);
-    const height = 40 + ((i * 53) % 55);
-    const hill = new THREE.Mesh(
-      new THREE.ConeGeometry(radius, height, 7, 1),
-      new THREE.MeshLambertMaterial({ color: COLORS.hills[i % COLORS.hills.length], flatShading: true }),
-    );
-    hill.position.set(
-      center.x + Math.cos(angle) * distance,
-      height / 2 - 4,
-      center.z + Math.sin(angle) * distance,
-    );
-    hill.rotation.y = i;
-    group.add(hill);
-  }
-  return group;
 }
 
 function buildClouds(center) {

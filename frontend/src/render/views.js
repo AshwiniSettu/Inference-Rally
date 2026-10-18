@@ -18,8 +18,8 @@ const CAMERA_PROBE_STEP = 0.5;
 const CAMERA_WALL_MARGIN = 1.2;
 const CAMERA_MIN_BACK = 3;
 const VICTORY_ORBIT_SPEED = 0.45; // radians/sec
-const VICTORY_RADIUS = 11;
-const VICTORY_HEIGHT = 7.5;
+const VICTORY_RADIUS = 12;
+const VICTORY_HEIGHT = 17; // above the rooftops around the exit
 
 /** Longest distance (<= max) behind ``origin`` along ``-forward`` that stays on the road. */
 function clearDistance(origin, forward, max, isOpen) {
@@ -47,7 +47,10 @@ export class SplitViews {
     this.renderer.shadowMap.autoUpdate = false;
     this.renderer.setScissorTest(true);
     this.retro = true;
+    this.retroChosen = false; // once the player picks pixels on/off, races stop resetting it
+    this.rig = CAMERA; // chase-camera placement; the map view flies higher (MAP_VIEW.camera)
     this.mapLocked = false; // play mode hides the overview map from the human
+    this.streetMapActive = false; // a real street map draws the overview instead
 
     this.chaseCameras = [];
     this.overviewCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 1000);
@@ -62,9 +65,23 @@ export class SplitViews {
 
   /** Toggle chunky pixels. @returns {boolean} new state */
   toggleRetro() {
+    this.retroChosen = true;
     this.retro = !this.retro;
     this.resize();
     return this.retro;
+  }
+
+  /**
+   * Camera placement and default pixel look for a race's view.
+   * @param {object} rig CAMERA or MAP_VIEW.camera.
+   * @param {boolean} retro Chunky pixels unless the player already chose.
+   */
+  configure(rig, retro) {
+    this.rig = rig;
+    if (!this.retroChosen && this.retro !== retro) {
+      this.retro = retro;
+      this.resize();
+    }
   }
 
   resize() {
@@ -82,7 +99,7 @@ export class SplitViews {
    */
   setup(racerCount, maze) {
     this.chaseCameras = Array.from({ length: racerCount }, (_, index) => {
-      const camera = new THREE.PerspectiveCamera(CAMERA.fov, 1, 0.5, 1400);
+      const camera = new THREE.PerspectiveCamera(this.rig.fov, 1, 0.5, 2000);
       camera.layers.enable(LAYERS.racerBase + index);
       camera.userData.initialized = false;
       return camera;
@@ -91,19 +108,21 @@ export class SplitViews {
     const b = junctionToWorld([maze.width - 1, maze.height - 1]);
     this.mapCenter.lerpVectors(a, b, 0.5);
     this.mapSize = Math.max(maze.width, maze.height) * BLOCK * OVERVIEW_MARGIN;
-    this.overviewCamera.position.set(this.mapCenter.x, 300, this.mapCenter.z);
+    // Low (the camera is orthographic, height does not zoom) so fog does not wash out the map.
+    this.overviewCamera.position.set(this.mapCenter.x, 140, this.mapCenter.z);
     this.overviewCamera.lookAt(this.mapCenter);
   }
 
   /**
-   * Smoothly move each chase camera behind its car, pulling in closer when a hedge is
+   * Smoothly move each chase camera behind its car, pulling in closer when a building is
    * between camera and car (otherwise turns would put the camera inside a wall).
    * @param {import('../cars/car.js').Car[]} cars In pane order.
    * @param {number} dt
    * @param {(x: number, z: number) => boolean} isOpen Road test from the maze builder.
    */
   updateCameras(cars, dt, isOpen) {
-    const follow = 1 - Math.exp(-dt * CAMERA.followRate);
+    const rig = this.rig;
+    const follow = 1 - Math.exp(-dt * rig.followRate);
     cars.forEach((car, index) => {
       const camera = this.chaseCameras[index];
       if (!camera) return;
@@ -113,12 +132,12 @@ export class SplitViews {
         this.orbit(camera, car, dt);
         return;
       }
-      const back = clearDistance(origin, forward, CAMERA.back, isOpen);
+      const back = clearDistance(origin, forward, rig.back, isOpen);
       // When squeezed close, look from higher up so the car stays in view.
-      const squeeze = 1 - back / CAMERA.back;
-      const rise = (car.thinking ? CAMERA.thinkingRise : 0) + squeeze * 2.5;
-      const desired = origin.clone().addScaledVector(forward, -back).setY(CAMERA.height + rise);
-      const target = origin.clone().addScaledVector(forward, CAMERA.lookAhead).setY(1.2);
+      const squeeze = 1 - back / rig.back;
+      const rise = (car.thinking ? rig.thinkingRise : 0) + squeeze * 2.5;
+      const desired = origin.clone().addScaledVector(forward, -back).setY(rig.height + rise);
+      const target = origin.clone().addScaledVector(forward, rig.lookAhead).setY(1.2);
 
       if (!camera.userData.initialized) {
         camera.position.copy(desired);
@@ -126,15 +145,17 @@ export class SplitViews {
         camera.userData.initialized = true;
       }
       camera.position.lerp(desired, follow);
-      // Never let the smoothed position drift into a hedge either.
+      // Never let the smoothed position drift into a building either.
       if (!isOpen(camera.position.x, camera.position.z)) camera.position.lerp(desired, 0.5);
       camera.userData.lookAt.lerp(target, follow);
       camera.lookAt(camera.userData.lookAt);
     });
   }
 
-  /** Victory lap: slowly circle a finished car from above the hedges. */
+  /** Victory lap: slowly circle a finished car from above the rooftops. */
   orbit(camera, car, dt) {
+    // A page opened after the race ended meets cars already finished: start looking at them.
+    camera.userData.lookAt ??= car.object.position.clone();
     camera.userData.orbit = (camera.userData.orbit ?? car.yaw + Math.PI) + dt * VICTORY_ORBIT_SPEED;
     const angle = camera.userData.orbit;
     const desired = car.object.position
@@ -168,7 +189,7 @@ export class SplitViews {
     });
 
     const overview = this.paneRect(this.panes.length - 1, canvasRect);
-    if (overview && !this.mapLocked) {
+    if (overview && !this.mapLocked && !this.streetMapActive) {
       const map = { ...overview, width: overview.width * OVERVIEW_MAP_SHARE };
       const aspect = map.width / map.height;
       const half = this.mapSize / 2;

@@ -19,3 +19,7 @@ class DeciderError(InferenceRallyError):
 
 class DecisionTimeoutError(DeciderError):
     """The decider (e.g. the human player) did not answer in time."""
+
+
+class MapError(InferenceRallyError):
+    """A street map could not be made from the downloaded map data."""

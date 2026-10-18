@@ -15,7 +15,7 @@ from pydantic import BaseModel, ValidationError
 from inference_rally.deciders import Decider, HumanDecider, OpenAIDecider, SimulatedDecider
 from inference_rally.errors import ConfigError, DeciderError
 from inference_rally.maze import Maze
-from inference_rally.models import RacerSpec, RaceSettings
+from inference_rally.models import CityMap, RacerSpec, RaceSettings
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "racers.yaml"
 
@@ -26,6 +26,7 @@ class AppConfig(BaseModel):
     race: RaceSettings
     active_profile: str
     profiles: dict[str, list[RacerSpec]]
+    city: CityMap | None = None  # loaded from ``race.street_map``, not written in the YAML
 
     def racers(self, profile: str | None = None) -> list[RacerSpec]:
         """Racer specs for ``profile`` (default: the active one)."""
@@ -43,11 +44,30 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> AppConfig:
     """
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-        return AppConfig.model_validate(raw)
+        config = AppConfig.model_validate(raw)
     except FileNotFoundError as exc:
         raise ConfigError(f"Config file not found: {path}") from exc
     except (yaml.YAMLError, ValidationError) as exc:
         raise ConfigError(f"Invalid config {path}: {exc}") from exc
+    if config.race.street_map:
+        config.city = load_city(path.parent / config.race.street_map)
+    return config
+
+
+def load_city(path: Path) -> CityMap:
+    """Read a street map made by ``scripts/fetch_map.py``.
+
+    Raises:
+        ConfigError: If the file is missing or invalid.
+
+    """
+    try:
+        return CityMap.model_validate_json(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        hint = "make one with scripts/fetch_map.py"
+        raise ConfigError(f"Street map not found: {path} ({hint})") from exc
+    except ValidationError as exc:
+        raise ConfigError(f"Invalid street map {path}: {exc}") from exc
 
 
 def build_decider(spec: RacerSpec, maze: Maze, seed: int) -> Decider:

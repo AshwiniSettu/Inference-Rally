@@ -69,6 +69,87 @@ class RaceSettings(BaseModel):
     max_decisions: int = Field(default=80, ge=1)
     countdown_s: int = Field(default=3, ge=0, le=10)
     token_event_interval_s: float = Field(default=0.1, gt=0)
+    street_map: str | None = Field(
+        default=None,
+        description="Real street map (scripts/fetch_map.py), relative to racers.yaml; "
+        "none = a random grid of maze_width x maze_height",
+    )
+
+
+# --------------------------------------------------------------------------- street maps
+
+
+class StreetLine(BaseModel):
+    """One straight street of a real grid: a column (north-south) or a row (east-west)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    offset_m: float = Field(description="Meters from the map origin, across the street")
+
+
+class CityBlock(BaseModel):
+    """What stands on one block between two neighboring columns and rows."""
+
+    model_config = ConfigDict(frozen=True)
+
+    x: int = Field(description="Block east of column x (-1 = the ring west of the grid)")
+    y: int = Field(description="Block north of row y (-1 = the ring south of the grid)")
+    height_m: float = Field(ge=0, description="Typical building height, weighted by footprint")
+    max_height_m: float = Field(ge=0)
+    built: float = Field(ge=0, le=1, description="Share of the block covered by buildings")
+    park: float = Field(ge=0, le=1, description="Share of the block covered by parks")
+    name: str | None = Field(default=None, description="Best-known place on the block")
+
+
+class SkylineBuilding(BaseModel):
+    """A tall building outside the grid, seen on the horizon."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str | None = None
+    lat: float
+    lon: float
+    height_m: float = Field(gt=0)
+    width_m: float = Field(gt=0, description="Size along the map's east-west axis")
+    depth_m: float = Field(gt=0, description="Size along the map's north-south axis")
+
+
+class CityMap(BaseModel):
+    """A real street grid made from OpenStreetMap data by ``scripts/fetch_map.py``."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    title: str
+    attribution: str
+    origin: tuple[float, float] = Field(description="Latitude, longitude of the map's frame")
+    rotation_deg: float = Field(description="Street grid angle, counterclockwise from east")
+    columns: list[StreetLine] = Field(min_length=2, description="North-south, west to east")
+    rows: list[StreetLine] = Field(min_length=2, description="East-west, south to north")
+    streets: list[tuple[GridPoint, GridPoint]] = Field(
+        description="Real roads between neighboring junctions"
+    )
+    start: GridPoint
+    exit: GridPoint
+    blocks: list[CityBlock]
+    skyline: list[SkylineBuilding] = Field(default_factory=list)
+    bbox: tuple[float, float, float, float] | None = Field(
+        default=None, description="Area fetched: south, west, north, east"
+    )
+    tile_zooms: list[int] = Field(
+        default_factory=list, description="Zoom levels of the area's map pictures in maps/tiles"
+    )
+
+    @property
+    def width(self) -> int:
+        """Junction columns."""
+        return len(self.columns)
+
+    @property
+    def height(self) -> int:
+        """Junction rows."""
+        return len(self.rows)
 
 
 # --------------------------------------------------------------------------- decisions
@@ -142,6 +223,10 @@ class MazeView(BaseModel):
     dead_ends: list[GridPoint]
     optimal_path: list[GridPoint]
     seed: int
+    closed: list[tuple[GridPoint, GridPoint]] = Field(
+        default_factory=list, description="Real streets closed for this race"
+    )
+    city: CityMap | None = None
 
 
 class RacerView(BaseModel):

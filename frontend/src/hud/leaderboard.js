@@ -21,8 +21,11 @@ export class Leaderboard {
     this.rows = new Map();
   }
 
-  /** @param {object[]} racers Racer views from ``race_init``. */
-  reset(racers) {
+  /**
+   * @param {object[]} racers Racer views from ``race_init``.
+   * @param {object|null} city Street map, credited under the map.
+   */
+  reset(racers, city = null) {
     this.pane.innerHTML = '';
     this.pane.dataset.state = 'overview';
     const panel = el('div', 'board', this.pane);
@@ -40,7 +43,9 @@ export class Leaderboard {
     }
     el('div', 'board-title board-title-feed', panel, 'DECISIONS');
     this.feed = el('div', 'feed', panel);
-    el('div', 'map-legend', this.pane, 'WHITE DASH = A* BEST ROUTE');
+    const key = city?.tile_zooms?.length ? 'BLUE DASH = A* BEST ROUTE · RED = CLOSED' : 'WHITE DASH = A* BEST ROUTE';
+    const legend = el('div', 'map-legend', this.pane, key);
+    if (city) el('div', 'map-credit', legend, `${city.title} · ${city.attribution}`);
     this.lock = el('div', 'map-lock', this.pane);
     el('b', '', this.lock, 'MAP LOCKED');
     el('span', '', this.lock, 'FOLLOW THE GREEN BEAM TO THE EXIT');

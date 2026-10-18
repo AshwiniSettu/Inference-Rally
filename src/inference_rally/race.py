@@ -19,6 +19,7 @@ from inference_rally.errors import DeciderError, DecisionTimeoutError, InvalidMo
 from inference_rally.maze import Heading, Maze, Move, Node
 from inference_rally.metrics import TokenMeter
 from inference_rally.models import (
+    CityMap,
     CountdownEvent,
     DecisionEvent,
     DecisionMetrics,
@@ -84,6 +85,7 @@ class RaceEngine:
         racers: list[tuple[RacerSpec, Decider]],
         settings: RaceSettings,
         emit: EmitFn,
+        city: CityMap | None = None,
     ) -> None:
         """Prepare a race.
 
@@ -92,9 +94,11 @@ class RaceEngine:
             racers: Each racer's spec with the decider that drives it.
             settings: Timing and limits.
             emit: Function that publishes an event (e.g. to the SSE hub).
+            city: The real street map the maze was carved from, if any.
         """
         self.race_id = uuid.uuid4().hex[:8]
         self._maze = maze
+        self._city = city
         self._settings = settings
         self._emit = emit
         self._clock_start = time.perf_counter()
@@ -343,6 +347,8 @@ class RaceEngine:
                 dead_ends=maze.dead_ends(),
                 optimal_path=maze.shortest_path(),
                 seed=maze.seed,
+                closed=sorted(set(self._city.streets) - set(maze.roads)) if self._city else [],
+                city=self._city,
             ),
             racers=[
                 RacerView(

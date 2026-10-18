@@ -164,6 +164,9 @@ def generate_maze(
     seed: int,
     loop_ratio: float = 0.08,
     branchiness: float = 0.5,
+    streets: Iterable[tuple[Node, Node]] | None = None,
+    start: Node = (0, 0),
+    exit_node: Node | None = None,
 ) -> Maze:
     """Generate a reproducible maze with junctions, dead ends and a few loops.
 
@@ -179,20 +182,27 @@ def generate_maze(
         seed: RNG seed; the same seed always produces the same maze.
         loop_ratio: Fraction of remaining walls to remove (0 = exactly one route).
         branchiness: 0 = corridors only, 1 = maximally branchy.
+        streets: Real roads to carve the maze from (default: every road of the grid).
+            Streets the maze does not use stay closed, so a real street map is still a
+            maze; ``loop_ratio=1`` opens every real street.
+        start: Junction where every racer begins.
+        exit_node: Junction racers must reach (default: the north-east corner).
 
     Returns:
-        The generated maze, start at the south-west corner and exit at the north-east.
+        The generated maze.
 
     Raises:
-        ValueError: If the grid is too small or a ratio is out of range.
+        ValueError: If the grid is too small, a ratio is out of range or the exit
+            cannot be reached from the start on ``streets``.
     """
     if width < 2 or height < 2:
         raise ValueError("Maze must be at least 2x2")
     if not 0.0 <= loop_ratio <= 1.0 or not 0.0 <= branchiness <= 1.0:
         raise ValueError("loop_ratio and branchiness must be between 0 and 1")
 
+    allowed = None if streets is None else {_edge(a, b) for a, b in streets}
+    exit_node = exit_node or (width - 1, height - 1)
     rng = random.Random(seed)
-    start: Node = (0, 0)
     roads: set[tuple[Node, Node]] = set()
     visited = {start}
     frontier = [start]
@@ -203,7 +213,10 @@ def generate_maze(
         unvisited = [
             neighbor
             for neighbor in (_step(node, heading) for heading in Heading)
-            if 0 <= neighbor[0] < width and 0 <= neighbor[1] < height and neighbor not in visited
+            if 0 <= neighbor[0] < width
+            and 0 <= neighbor[1] < height
+            and neighbor not in visited
+            and (allowed is None or _edge(node, neighbor) in allowed)
         ]
         if not unvisited:
             frontier.pop(index)
@@ -213,16 +226,26 @@ def generate_maze(
         visited.add(nxt)
         frontier.append(nxt)
 
-    walls = sorted(
+    if exit_node not in visited:
+        raise ValueError(f"The exit {exit_node} cannot be reached from the start {start}")
+    grid = (
         _edge((x, y), neighbor)
         for x in range(width)
         for y in range(height)
         for neighbor in ((x + 1, y), (x, y + 1))
-        if neighbor[0] < width and neighbor[1] < height and _edge((x, y), neighbor) not in roads
+        if neighbor[0] < width and neighbor[1] < height
+    )
+    walls = sorted(
+        edge
+        for edge in grid
+        if edge not in roads
+        and (allowed is None or edge in allowed)
+        and edge[0] in visited  # a street cut off from the start stays out of the race
+        and edge[1] in visited
     )
     roads.update(rng.sample(walls, k=round(len(walls) * loop_ratio)))
 
-    return Maze(width, height, roads, start=start, exit_node=(width - 1, height - 1), seed=seed)
+    return Maze(width, height, roads, start=start, exit_node=exit_node, seed=seed)
 
 
 def _edge(a: Node, b: Node) -> tuple[Node, Node]:

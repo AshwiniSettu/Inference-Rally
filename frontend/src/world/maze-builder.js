@@ -1,28 +1,29 @@
 /**
- * Builds the 3D hedge maze from the server's maze layout.
+ * Builds the 3D city maze (San Francisco streets) from the server's maze layout.
  *
  * The maze is rasterized onto a tile grid at twice the junction resolution: even/even
- * tiles are junctions, tiles between two junctions are roads (if connected) or hedge.
- * Everything repeated (roads, hedges, curbs, trees) uses InstancedMesh, so the whole
- * maze is a handful of draw calls — important with four viewports per frame.
+ * tiles are junctions, tiles between two junctions are roads (if connected) or a city
+ * block. Everything repeated (roads, buildings, sidewalks) uses InstancedMesh, so the
+ * whole maze is a few dozen draw calls — important with four viewports per frame.
  */
 
 import * as THREE from 'three';
 import { LAYERS, TILE, WORLD } from '../config.js';
 import { junctionToWorld, tileToWorld } from '../geometry.js';
 import { buildCarModel } from '../cars/car-model.js';
+import { buildCityBlocks } from './city-blocks.js';
 import {
+  barricadeTexture,
   checkerTexture,
-  curbTexture,
   flameTexture,
-  hedgeTexture,
-  hedgeTopTexture,
   junctionTexture,
   roadTexture,
+  sidewalkTexture,
   textTexture,
 } from './textures.js';
 
 const START_STRAIGHT_TILES = 2;
+const BARRICADE_INSET = 1.4; // from the junction end of a closed street
 
 const NEIGHBORS = [
   [1, 0],
@@ -42,10 +43,10 @@ export function buildMaze(maze) {
   group.name = 'maze';
   const tiles = rasterize(maze);
 
-  group.add(buildFloor(tiles.roads, tiles.junctions));
-  group.add(buildHedges(tiles.walls));
-  group.add(buildCurbs(tiles));
-  group.add(buildTrees(tiles.walls));
+  group.add(buildFloor([...tiles.roads, ...tiles.closed], tiles.junctions));
+  group.add(buildCityBlocks(tiles.walls, tiles.open, maze));
+  group.add(buildSidewalks(tiles));
+  if (tiles.closed.length) group.add(buildBarricades(closedTilePlacements(tiles.closed)));
   group.add(buildStartLine(maze));
 
   const finish = buildFinishGate(maze);
@@ -59,7 +60,7 @@ export function buildMaze(maze) {
   return {
     group,
     exitPosition: junctionToWorld(maze.exit),
-    /** True if world point (x, z) is on a road or junction (not inside a hedge). */
+    /** True if world point (x, z) is on a road or junction (not inside a building). */
     isOpen(x, z) {
       return tiles.open.has(`${Math.round(x / TILE)},${Math.round(-z / TILE)}`);
     },
@@ -78,14 +79,18 @@ function rasterize(maze) {
   const maxJ = 2 * (maze.height - 1);
   const open = new Map(); // "i,j" -> "junction" | "ns" | "ew"
 
-  for (let x = 0; x < maze.width; x += 1) {
-    for (let y = 0; y < maze.height; y += 1) open.set(`${2 * x},${2 * y}`, 'junction');
+  // A junction no road reaches (a real map's gap, e.g. a park) stays a city block.
+  for (const [a, b] of maze.roads) {
+    for (const [x, y] of [a, b]) open.set(`${2 * x},${2 * y}`, 'junction');
   }
   for (const [[ax, ay], [bx, by]] of maze.roads) {
     open.set(`${ax + bx},${ay + by}`, ax === bx ? 'ns' : 'ew');
   }
+  // Real streets this race closed: drawn as streets, but walls to cars and cameras.
+  const closed = (maze.closed ?? []).map(([[ax, ay], [bx, by]]) => [ax + bx, ay + by, ax === bx ? 'ns' : 'ew']);
+  const closedKeys = new Set(closed.map(([i, j]) => `${i},${j}`));
   // Starting straight behind the start line (outside the maze, purely visual): gives
-  // the chase cameras room on the grid instead of pressing them against a hedge.
+  // the chase cameras room on the grid instead of pressing them against a building.
   const first = maze.optimal_path[1] ?? [maze.start[0], maze.start[1] + 1];
   const [bi, bj] = [maze.start[0] - first[0], maze.start[1] - first[1]];
   for (let k = 1; k <= START_STRAIGHT_TILES; k += 1) {
@@ -100,10 +105,10 @@ function rasterize(maze) {
       const kind = open.get(`${i},${j}`);
       if (kind === 'junction') junctions.push([i, j]);
       else if (kind) roads.push([i, j, kind]);
-      else walls.push([i, j]);
+      else if (!closedKeys.has(`${i},${j}`)) walls.push([i, j]);
     }
   }
-  return { open, junctions, roads, walls };
+  return { open, junctions, roads, walls, closed, closedKeys };
 }
 
 // --------------------------------------------------------------------------- floor
@@ -147,58 +152,113 @@ function buildFloor(roads, junctions) {
   return group;
 }
 
-// --------------------------------------------------------------------------- hedges & curbs
+// --------------------------------------------------------------------------- sidewalks
 
-function buildHedges(walls) {
-  const side = new THREE.MeshLambertMaterial({ map: hedgeTexture() });
-  const top = new THREE.MeshLambertMaterial({ map: hedgeTopTexture() });
-  const geometry = new THREE.BoxGeometry(TILE, WORLD.hedgeHeight, TILE);
-  // BoxGeometry face order: +x, -x, +y, -y, +z, -z.
-  const mesh = new THREE.InstancedMesh(geometry, [side, side, top, top, side, side], walls.length);
-  const matrix = new THREE.Matrix4();
-  const position = new THREE.Vector3();
-  const scale = new THREE.Vector3();
-  const identity = new THREE.Quaternion();
-
-  walls.forEach(([i, j], index) => {
-    // Slight height variation keeps the hedge mass from looking like a spreadsheet.
-    const wobble = 0.9 + hash(i, j) * 0.22;
-    scale.set(1, wobble, 1);
-    position.copy(tileToWorld(i, j)).setY((WORLD.hedgeHeight * wobble) / 2);
-    matrix.compose(position, identity, scale);
-    mesh.setMatrixAt(index, matrix);
-  });
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  return mesh;
+/** Sidewalks along every edge between a street and a building; red curbs at corners. */
+function buildSidewalks(tiles) {
+  const group = new THREE.Group();
+  const street = (i, j) => tiles.open.has(`${i},${j}`) || tiles.closedKeys.has(`${i},${j}`);
+  for (const [streetTiles, redCurb] of [
+    [[...tiles.roads, ...tiles.closed], false],
+    [tiles.junctions, true],
+  ]) {
+    const edges = [];
+    for (const [i, j] of streetTiles) {
+      for (const [di, dj] of NEIGHBORS) {
+        if (!street(i + di, j + dj)) edges.push([i, j, di, dj]);
+      }
+    }
+    group.add(sidewalkMesh(edges, redCurb));
+  }
+  return group;
 }
 
-function buildCurbs(tiles) {
-  const edges = [];
-  const openTiles = [...tiles.junctions.map(([i, j]) => [i, j]), ...tiles.roads.map(([i, j]) => [i, j])];
-  for (const [i, j] of openTiles) {
-    for (const [di, dj] of NEIGHBORS) {
-      if (!tiles.open.has(`${i + di},${j + dj}`)) edges.push([i, j, di, dj]);
-    }
-  }
+/** A barricade near both ends of every closed street tile. */
+function closedTilePlacements(closed) {
+  return closed.flatMap(([i, j, kind]) =>
+    [-1, 1].map((end) => {
+      const along = TILE / 2 - BARRICADE_INSET;
+      const offset = kind === 'ew' ? new THREE.Vector3(end * along, 0, 0) : new THREE.Vector3(0, 0, end * along);
+      return { position: tileToWorld(i, j).add(offset), kind };
+    }),
+  );
+}
 
-  const geometry = new THREE.BoxGeometry(TILE, WORLD.curbHeight, WORLD.curbWidth);
+/**
+ * Striped barricades with a ROAD CLOSED sign, each across its street.
+ * @param {{position: THREE.Vector3, kind: 'ns'|'ew'}[]} placements Street direction per barricade.
+ * @returns {THREE.Group}
+ */
+export function buildBarricades(placements) {
+  const count = placements.length;
+  const boards = new THREE.InstancedMesh(
+    new THREE.BoxGeometry(TILE - 2 * WORLD.sidewalkWidth, 0.4, 0.2),
+    new THREE.MeshLambertMaterial({ map: barricadeTexture() }),
+    count * 2,
+  );
+  const legs = new THREE.InstancedMesh(
+    new THREE.BoxGeometry(0.2, 1.8, 0.7),
+    new THREE.MeshLambertMaterial({ color: 0xf0782a }),
+    count * 2,
+  );
+  const signFace = new THREE.MeshBasicMaterial({
+    map: textTexture('ROAD CLOSED', { width: 96, height: 20, color: '#111111', background: '#f2a33a' }),
+  });
+  const signEdge = new THREE.MeshLambertMaterial({ color: 0xf2a33a });
+  const signs = new THREE.InstancedMesh(
+    new THREE.BoxGeometry(3.4, 0.8, 0.12),
+    [signEdge, signEdge, signEdge, signEdge, signFace, signFace],
+    count,
+  );
+  const matrix = new THREE.Matrix4();
+  const part = new THREE.Matrix4();
+  const up = new THREE.Vector3(0, 1, 0);
+  const halfRoad = TILE / 2 - WORLD.sidewalkWidth;
+
+  placements.forEach(({ position, kind }, index) => {
+    // Barricades are built across X; a north-south street turns nothing, east-west turns 90°.
+    matrix.makeRotationAxis(up, kind === 'ew' ? Math.PI / 2 : 0).setPosition(position);
+    for (const [n, y] of [
+      [0, 0.8],
+      [1, 1.4],
+    ]) {
+      boards.setMatrixAt(index * 2 + n, part.makeTranslation(0, y, 0).premultiply(matrix));
+    }
+    for (const [n, side] of [
+      [0, -1],
+      [1, 1],
+    ]) {
+      legs.setMatrixAt(index * 2 + n, part.makeTranslation(side * (halfRoad - 0.4), 0.9, 0).premultiply(matrix));
+    }
+    signs.setMatrixAt(index, part.makeTranslation(0, 2.3, 0).premultiply(matrix));
+  });
+  const group = new THREE.Group();
+  for (const mesh of [boards, legs, signs]) {
+    mesh.castShadow = true;
+    group.add(mesh);
+  }
+  return group;
+}
+
+function sidewalkMesh(edges, redCurb) {
+  const geometry = new THREE.BoxGeometry(TILE, WORLD.sidewalkHeight, WORLD.sidewalkWidth);
   const mesh = new THREE.InstancedMesh(
     geometry,
-    new THREE.MeshLambertMaterial({ map: curbTexture() }),
+    new THREE.MeshLambertMaterial({ map: sidewalkTexture(redCurb) }),
     edges.length,
   );
   const matrix = new THREE.Matrix4();
   const rotation = new THREE.Quaternion();
   const up = new THREE.Vector3(0, 1, 0);
   const scale = new THREE.Vector3(1, 1, 1);
-  const inset = TILE / 2 - WORLD.curbWidth / 2;
+  const inset = TILE / 2 - WORLD.sidewalkWidth / 2;
 
   edges.forEach(([i, j, di, dj], index) => {
     const position = tileToWorld(i, j);
     position.x += di * inset;
     position.z -= dj * inset; // grid north (+j) is world -Z
-    position.y = WORLD.curbHeight / 2;
+    // Slabs overlap at inside corners: lift one direction a hair so their tops never z-fight.
+    position.y = WORLD.sidewalkHeight / 2 + (di !== 0 ? 0.01 : 0);
     rotation.setFromAxisAngle(up, di !== 0 ? Math.PI / 2 : 0);
     matrix.compose(position, rotation, scale);
     mesh.setMatrixAt(index, matrix);
@@ -207,56 +267,10 @@ function buildCurbs(tiles) {
   return mesh;
 }
 
-// --------------------------------------------------------------------------- trees
-
-function buildTrees(walls) {
-  const spots = walls.filter(([i, j]) => hash(i * 3, j * 7) < WORLD.treeChance);
-  const group = new THREE.Group();
-  const trunk = new THREE.InstancedMesh(
-    new THREE.CylinderGeometry(0.35, 0.5, 3.2, 5),
-    new THREE.MeshLambertMaterial({ color: 0x5a3d22, flatShading: true }),
-    spots.length,
-  );
-  const lower = new THREE.InstancedMesh(
-    new THREE.ConeGeometry(3.0, 5.2, 7),
-    new THREE.MeshLambertMaterial({ color: 0xffffff, flatShading: true }),
-    spots.length,
-  );
-  const upper = new THREE.InstancedMesh(
-    new THREE.ConeGeometry(2.1, 4.0, 7),
-    new THREE.MeshLambertMaterial({ color: 0xffffff, flatShading: true }),
-    spots.length,
-  );
-  const matrix = new THREE.Matrix4();
-  const color = new THREE.Color();
-  const greens = [0x2b5e33, 0x356b3b, 0x24522c, 0x3d7a42];
-
-  spots.forEach(([i, j], index) => {
-    const base = tileToWorld(i, j);
-    const jitterX = (hash(i, j * 5) - 0.5) * 4;
-    const jitterZ = (hash(i * 5, j) - 0.5) * 4;
-    const size = 0.85 + hash(i * 11, j * 13) * 0.5;
-    const y = WORLD.hedgeHeight;
-    matrix.makeScale(size, size, size).setPosition(base.x + jitterX, y + 1.4 * size, base.z + jitterZ);
-    trunk.setMatrixAt(index, matrix);
-    matrix.makeScale(size, size, size).setPosition(base.x + jitterX, y + 4.4 * size, base.z + jitterZ);
-    lower.setMatrixAt(index, matrix);
-    matrix.makeScale(size, size, size).setPosition(base.x + jitterX, y + 6.8 * size, base.z + jitterZ);
-    upper.setMatrixAt(index, matrix);
-    color.setHex(greens[Math.floor(hash(i * 17, j * 19) * greens.length)]);
-    lower.setColorAt(index, color);
-    upper.setColorAt(index, color.offsetHSL(0, 0, 0.04));
-  });
-  for (const mesh of [trunk, lower, upper]) {
-    mesh.castShadow = true;
-    group.add(mesh);
-  }
-  return group;
-}
-
 // --------------------------------------------------------------------------- landmarks
 
-function buildStartLine(maze) {
+/** Checkered line across the start junction. @param {object} maze */
+export function buildStartLine(maze) {
   const first = maze.optimal_path[1] ?? maze.start;
   const horizontal = first[1] === maze.start[1]; // first road runs east-west
   const line = new THREE.Mesh(
@@ -269,7 +283,8 @@ function buildStartLine(maze) {
   return line;
 }
 
-function buildFinishGate(maze) {
+/** FINISH banner, green beam and pad at the exit. @param {object} maze */
+export function buildFinishGate(maze) {
   const group = new THREE.Group();
   const path = maze.optimal_path;
   const before = path[path.length - 2] ?? maze.start;
@@ -386,10 +401,3 @@ function buildOptimalPath(path) {
   }
   return group;
 }
-
-/** Stable pseudo-random value in [0, 1) for a tile, so decoration never changes per load. */
-function hash(i, j) {
-  const s = Math.sin(i * 127.1 + j * 311.7) * 43758.5453;
-  return s - Math.floor(s);
-}
-

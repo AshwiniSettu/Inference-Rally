@@ -11,6 +11,10 @@ race:
   uturn_penalty_s: 0.6   # extra time for turning around
   max_decisions: 80      # DNF after this many junctions
   countdown_s: 3
+  # Real streets from OpenStreetMap (make another area with scripts/fetch_map.py).
+  # The maze closes some of them each race; loop_ratio: 1 keeps every real street open.
+  # Remove this line for a random grid of maze_width x maze_height.
+  street_map: maps/sf-north-beach.json
 
 active_profile: demo
 

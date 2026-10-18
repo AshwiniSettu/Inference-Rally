@@ -556,6 +556,23 @@ body {
   background: rgba(0, 0, 0, 0.55);
 }
 
+.street-map {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 56%;
+  height: 100%;
+}
+
+.street-map[hidden] {
+  display: none;
+}
+
+.map-credit {
+  margin-top: 4px;
+  color: #9aa3ab;
+}
+
 /* ------------------------------------------------------------------ overlays */
 
 .overlay {

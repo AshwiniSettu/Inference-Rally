@@ -39,6 +39,7 @@ from inference_rally.race import RaceEngine
 logger = logging.getLogger(__name__)
 
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+MAPS_DIR = Path(__file__).resolve().parents[2] / "maps"  # made by scripts/fetch_map.py
 SSE_PING_S = 15
 SUBSCRIBER_QUEUE_SIZE = 2000
 
@@ -98,19 +99,32 @@ class RaceController:
         settings = self._config.race
         if seed is not None:
             settings = settings.model_copy(update={"seed": seed})
-        maze = generate_maze(
-            settings.maze_width,
-            settings.maze_height,
-            settings.seed,
-            loop_ratio=settings.loop_ratio,
-            branchiness=settings.branchiness,
-        )
+        city = self._config.city
+        if city:
+            maze = generate_maze(
+                city.width,
+                city.height,
+                settings.seed,
+                loop_ratio=settings.loop_ratio,
+                branchiness=settings.branchiness,
+                streets=city.streets,
+                start=city.start,
+                exit_node=city.exit,
+            )
+        else:
+            maze = generate_maze(
+                settings.maze_width,
+                settings.maze_height,
+                settings.seed,
+                loop_ratio=settings.loop_ratio,
+                branchiness=settings.branchiness,
+            )
         racers = [
             (spec, build_decider(spec, maze, settings.seed))
             for spec in self._config.racers(profile)
         ]
         self._humans = {spec.id: d for spec, d in racers if isinstance(d, HumanDecider)}
-        return RaceEngine(maze, racers, settings, self._hub.publish)
+        return RaceEngine(maze, racers, settings, self._hub.publish, city=city)
 
     async def preview(self, profile: str | None = None) -> None:
         """Show a profile's maze and racers on the attract screen without racing."""
@@ -210,6 +224,16 @@ def create_app(config: AppConfig) -> Starlette:
         Route("/api/race/preview", preview_race, methods=["POST"]),
         Route("/api/human/move", human_move, methods=["POST"]),
         Route("/api/health", health),
+        Mount(
+            "/api/tiles",
+            StaticFiles(directory=MAPS_DIR / "tiles", check_dir=False),
+            name="tiles",
+        ),
+        Mount(
+            "/api/features",
+            StaticFiles(directory=MAPS_DIR / "features", check_dir=False),
+            name="features",
+        ),
     ]
     # Serve the built frontend when present, so the demo needs a single process.
     if FRONTEND_DIST.is_dir():

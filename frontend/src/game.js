@@ -7,17 +7,20 @@
  */
 
 import * as THREE from 'three';
-import { HUD, HUMAN_KEYS, LAYERS, STALE_EVENT_S } from './config.js';
+import { CAMERA, HUD, HUMAN_KEYS, LAYERS, MAP_VIEW, STALE_EVENT_S } from './config.js';
 import { Car } from './cars/car.js';
 import { OptionArrows } from './cars/option-arrows.js';
 import { Leaderboard } from './hud/leaderboard.js';
 import { Overlays } from './hud/overlays.js';
 import { RacerHud, ordinal } from './hud/racer-hud.js';
 import { OverviewMarkers } from './render/overview-markers.js';
+import { StreetMap } from './render/street-map.js';
 import { SplitViews } from './render/views.js';
+import { GeoFrame } from './world/geo.js';
+import { buildMapWorld, realJunctionLines } from './world/map-world.js';
 import { buildMaze } from './world/maze-builder.js';
 import { buildScenery } from './world/scenery.js';
-import { junctionToWorld } from './geometry.js';
+import { junctionToWorld, setJunctionLines } from './geometry.js';
 
 const LANE_OFFSETS = [-2.4, 0, 2.4, 1.2];
 const PANE_PAN = [-0.6, 0.6, -0.6, 0.6];
@@ -35,6 +38,7 @@ export class Game {
     this.views = new SplitViews(dom.canvas, dom.panes);
     this.overlays = new Overlays(dom.overlay);
     this.leaderboard = new Leaderboard(dom.panes[dom.panes.length - 1]);
+    this.streetMap = new StreetMap();
 
     this.scene = null;
     this.race = null; // per-race state, rebuilt on every race_init
@@ -79,10 +83,16 @@ export class Game {
     this.disposeRace();
     this.clockOffset = Infinity;
     const scene = new THREE.Scene();
-    const maze = buildMaze(event.maze);
+    const city = event.maze.city ?? null;
+    // The real map is the default view of a street map; ?view=city shows the pixel city.
+    const mapView = Boolean(city?.tile_zooms?.length) && new URLSearchParams(location.search).get('view') !== 'city';
+    setJunctionLines(...(mapView ? realJunctionLines(city) : [null, null]));
+    const geo = new GeoFrame(city, event.maze, { squeeze: !mapView });
+    const maze = mapView ? buildMapWorld(event.maze, geo) : buildMaze(event.maze);
     scene.add(maze.group);
     const center = junctionToWorld([(event.maze.width - 1) / 2, (event.maze.height - 1) / 2]);
-    const scenery = buildScenery(scene, center);
+    const scenery = buildScenery(scene, center, geo, city, mapView);
+    this.views.configure(mapView ? MAP_VIEW.camera : CAMERA, !mapView);
 
     const markers = new OverviewMarkers(scene);
     const racers = new Map();
@@ -97,7 +107,10 @@ export class Game {
 
     this.scene = scene;
     this.views.setup(event.racers.length, event.maze);
-    this.leaderboard.reset(event.racers);
+    this.leaderboard.reset(event.racers, city);
+    // A real street map shows as a real map; a random grid keeps the 3D top-down view.
+    this.streetMap.setup(this.dom.panes[this.dom.panes.length - 1], event.maze, geo);
+    this.views.streetMapActive = this.streetMap.active;
     this.dom.matchup.textContent = event.racers.map((r) => r.label).join(' VS ');
     this.race = {
       id: event.race_id,
@@ -113,6 +126,7 @@ export class Game {
       humanIds: event.racers.filter((r) => r.runtime === 'human').map((r) => r.id),
     };
     this.updateMapLock();
+    this.overlays.place = city?.title ?? null;
     if (event.preview) this.overlays.showTitle();
     else this.overlays.showMessage('GET READY');
   }
@@ -159,7 +173,7 @@ export class Game {
         entry.hud.showBanner(`Your move · ${arrowHint(event.options)}`, 'warn');
       } else {
         entry.hud.setStatus('thinking', 'THINKING…');
-        entry.hud.showBanner('Junction · thinking…', 'info');
+        entry.hud.showBanner(`${this.junctionName(event.node)} · thinking…`, 'info');
       }
       entry.hud.setTps(0);
       entry.hud.setTtft(null);
@@ -206,6 +220,7 @@ export class Game {
       entry.hud.setStatus('driving', 'DRIVING');
       entry.hud.setProgress(event.progress);
       this.race.markers.addTrail(event.racer, event.src, event.dst);
+      this.streetMap.addTrail(entry.racer, entry.index, event.src, event.dst);
       this.leaderboard.setProgress(event.racer, event.progress);
       // Keep the chosen arrow visible briefly as the car pulls away, then clear.
       setTimeout(() => entry.arrows.clear(), 450);
@@ -275,6 +290,7 @@ export class Game {
     this.race.markers.update(this.race.cars, wallTime);
     this.views.updateCameras(cars, dt, this.race.maze.isOpen);
     this.views.render(this.scene);
+    this.streetMap.draw([...this.race.racers.values()], wallTime);
     this.updateTimer(raceTime);
   }
 
@@ -320,6 +336,17 @@ export class Game {
     const locked = humanIds.length > 0 && humanStillDriving && endTime == null;
     this.views.mapLocked = locked;
     this.leaderboard.setMapLocked(locked);
+    this.streetMap.setLocked(locked);
+  }
+
+  /**
+   * Real cross streets of a junction, e.g. "Union & Stockton" (just "Junction" on a random grid).
+   * @param {[number, number]} node
+   */
+  junctionName([x, y]) {
+    const city = this.race.init.maze.city;
+    if (!city) return 'Junction';
+    return `${shortStreet(city.rows[y].name)} & ${shortStreet(city.columns[x].name)}`;
   }
 
   /** Expand one racer's pane to full screen (or ``null`` for the split view). @param {number|null} index */
@@ -333,6 +360,15 @@ export class Game {
   toggleRetro() {
     return this.views.toggleRetro();
   }
+}
+
+const STREET_TYPES = ['street', 'st', 'avenue', 'ave', 'boulevard', 'blvd', 'road', 'rd', 'place', 'way'];
+
+/** "Union Street" -> "Union": banners are narrow. */
+function shortStreet(name) {
+  const words = name.split(' ');
+  const last = words[words.length - 1].toLowerCase().replace('.', '');
+  return words.length > 1 && STREET_TYPES.includes(last) ? words.slice(0, -1).join(' ') : name;
 }
 
 function isOpposite(a, b) {
